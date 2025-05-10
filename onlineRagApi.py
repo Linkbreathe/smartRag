@@ -1,5 +1,3 @@
-# Flowchart: https://claude.ai/public/artifacts/af9c4502-17d8-4300-9cef-e03dbcfb86fd
-
 import os
 from dotenv import load_dotenv
 from typing import List, Dict, Any, Tuple, Optional
@@ -12,8 +10,34 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain_perplexity import ChatPerplexity
 from langchain_openai import ChatOpenAI
 
+# FastAPI
+from fastapi import FastAPI, Request
+from fastapi.responses import StreamingResponse, JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+import uvicorn
+import asyncio
+
 # Load environment variables
 load_dotenv()
+
+app = FastAPI(
+    title="SmartRAG API",
+    description="A RAG system that intelligently decides when to make external network requests based on query analysis.",
+    version="1.0.0",
+)
+
+# Add CORS middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # In production, replace with specific origins
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+class QueryRequest(BaseModel):
+    query: str
 
 """
     A RAG system that intelligently decides when to make external network requests
@@ -152,7 +176,7 @@ Based on this information, decide whether to use the internal knowledge base or 
             ("human", "{query}")
         ])
     
-    def evaluate_passage_relevance(self, query: str, passages: List[str]) -> Dict[str, Any]:
+    async def evaluate_passage_relevance(self, query: str, passages: List[str]) -> Dict[str, Any]:
         """
         Evaluate the relevance of retrieved passages to the query.
         
@@ -184,7 +208,7 @@ Based on this information, decide whether to use the internal knowledge base or 
                 "domain_authority_score": 0.5
             }
     
-    def evaluate_time_sensitivity(self, query: str) -> Dict[str, Any]:
+    async def evaluate_time_sensitivity(self, query: str) -> Dict[str, Any]:
         """
         Evaluate the time sensitivity of the query.
         
@@ -209,7 +233,7 @@ Based on this information, decide whether to use the internal knowledge base or 
                 "recency_required": "none"
             }
     
-    def make_decision(self, query: str, relevance_analysis: Dict[str, Any], 
+    async def make_decision(self, query: str, relevance_analysis: Dict[str, Any], 
                      time_sensitivity_analysis: Dict[str, Any]) -> Dict[str, Any]:
         """
         Decide whether to make an external network request.
@@ -241,53 +265,94 @@ Based on this information, decide whether to use the internal knowledge base or 
                 "confidence": 0.5
             }
     
-    def query(self, user_query: str) -> Dict[str, Any]:
+    async def query_streaming(self, user_query: str):
         """
-        Main query method that orchestrates the entire process.
+        Main query method that orchestrates the entire process with streaming results.
         
         Args:
             user_query: The user's query
             
-        Returns:
-            Dict containing the response and metadata
+        Yields:
+            Dict containing intermediate and final results
         """
         # Step 1: Retrieve passages from internal knowledge base
+        yield {"status": "processing", "step": "retrieving", "message": "Retrieving information from knowledge base..."}
         
-        """
-        ==========================Need to be modified===============================
-        * Comment the following two lines:
-            # nodes = self.retriever.retrieve(user_query)
-            # passages = [node.text for node in nodes]
-            
-        * What you need to do:
-            Call your function here, to return all the fragments from RAG as a LIST -> passages = [node.text for node in nodes]
-        """
         nodes = self.retriever.retrieve(user_query)
         passages = [node.text for node in nodes]
         
+        yield {"status": "processing", "step": "retrieved", "message": f"Retrieved {len(passages)} passages"}
+        
         # Step 2: Evaluate passage relevance
-        relevance_analysis = self.evaluate_passage_relevance(user_query, passages)
+        yield {"status": "processing", "step": "analyzing_relevance", "message": "Evaluating relevance of information..."}
+        
+        relevance_analysis = await self.evaluate_passage_relevance(user_query, passages)
+        
+        yield {
+            "status": "processing", 
+            "step": "relevance_analyzed", 
+            "message": f"Relevance score: {relevance_analysis.get('relevance_score', 0):.2f}",
+            "data": relevance_analysis
+        }
         
         # Step 3: Evaluate time sensitivity
-        time_sensitivity_analysis = self.evaluate_time_sensitivity(user_query)
+        yield {"status": "processing", "step": "analyzing_time_sensitivity", "message": "Evaluating time sensitivity..."}
+        
+        time_sensitivity_analysis = await self.evaluate_time_sensitivity(user_query)
+        
+        yield {
+            "status": "processing", 
+            "step": "time_sensitivity_analyzed", 
+            "message": f"Time sensitivity score: {time_sensitivity_analysis.get('time_sensitive', 0):.2f}",
+            "data": time_sensitivity_analysis
+        }
         
         # Step 4: Make the decision
-        decision = self.make_decision(
+        yield {"status": "processing", "step": "deciding", "message": "Making decision on information source..."}
+        
+        decision = await self.make_decision(
             user_query, 
             relevance_analysis, 
             time_sensitivity_analysis
         )
         
+        yield {
+            "status": "processing", 
+            "step": "decision_made", 
+            "message": f"Decision: {'External request' if decision.get('make_external_request', True) else 'Internal knowledge base'}",
+            "data": decision
+        }
+        
         # Step 5: Get the response based on the decision
         if decision.get("make_external_request", True):
             # Use Perplexity for external information
+            yield {"status": "processing", "step": "external_request", "message": "Making external request for up-to-date information..."}
+            
             perplexity_chain = self.perplexity_prompt | self.perplexity
             response = perplexity_chain.invoke({"query": user_query})
             source = "external"
+            final_response = response.content
+            citations = response.additional_kwargs.get("citations", [])
+            
+            yield {
+                "status": "complete", 
+                "source": source, 
+                "response": final_response,
+                "citations": citations
+            }
         else:
             # Use internal knowledge base
+            yield {"status": "processing", "step": "internal_response", "message": "Generating response from internal knowledge base..."}
+            
             response = self.index.as_query_engine().query(user_query)
             source = "internal"
+            final_response = str(response)
+            
+            yield {
+                "status": "complete", 
+                "source": source, 
+                "response": final_response
+            }
         
         # Log the decision process if enabled
         if self.enable_logging:
@@ -299,19 +364,6 @@ Based on this information, decide whether to use the internal knowledge base or 
                 decision, 
                 source
             )
-        
-        # Return the final result with metadata
-        return {
-            "query": user_query,
-            "response": response,
-            "source": source,
-            "metadata": {
-                "relevance_analysis": relevance_analysis,
-                "time_sensitivity_analysis": time_sensitivity_analysis,
-                "decision": decision,
-                "timestamp": datetime.now().isoformat()
-            }
-        }
     
     def _log_decision(self, query, passages, relevance_analysis, 
                      time_sensitivity_analysis, decision, source):
@@ -329,29 +381,96 @@ Based on this information, decide whether to use the internal knowledge base or 
         # In a real implementation, you might write to a file or database
         print(f"Decision Log: {json.dumps(log_entry, indent=2)}")
 
-# Example usage
+
+# Create a singleton instance of SmartRAG
+rag = SmartRAG()
+
+@app.get("/")
+async def root():
+    return {"message": "SmartRAG API is running", "docs": "/docs"}
+
+@app.post("/query")
+async def query(request: QueryRequest):
+    """
+    Non-streaming endpoint that returns the complete response.
+    This is useful for simple queries or testing.
+    """
+    
+    # ==========================Please Modify it follow the instruction========================================
+    
+    
+    # Step 1: Retrieve passages from internal knowledge base
+    nodes = rag.retriever.retrieve(request.query)
+    passages = [node.text for node in nodes]
+    
+    # Step 2: Evaluate passage relevance
+    relevance_analysis = await rag.evaluate_passage_relevance(request.query, passages)
+    
+    # Step 3: Evaluate time sensitivity
+    time_sensitivity_analysis = await rag.evaluate_time_sensitivity(request.query)
+    
+    # Step 4: Make the decision
+    decision = await rag.make_decision(
+        request.query, 
+        relevance_analysis, 
+        time_sensitivity_analysis
+    )
+    
+    # Step 5: Get the response based on the decision
+    if decision.get("make_external_request", True):
+        # Use Perplexity for external information
+        perplexity_chain = rag.perplexity_prompt | rag.perplexity
+        response = perplexity_chain.invoke({"query": request.query})
+        source = "external"
+        final_response = response.content
+        citations = response.additional_kwargs.get("citations", [])
+        
+        return {
+            "query": request.query,
+            "source": source,
+            "response": final_response,
+            "citations": citations,
+            "metadata": {
+                "relevance_analysis": relevance_analysis,
+                "time_sensitivity_analysis": time_sensitivity_analysis,
+                "decision": decision,
+                "timestamp": datetime.now().isoformat()
+            }
+        }
+    else:
+        # Use internal knowledge base
+        response = rag.index.as_query_engine().query(request.query)
+        source = "internal"
+        
+        return {
+            "query": request.query,
+            "source": source,
+            "response": str(response),
+            "metadata": {
+                "relevance_analysis": relevance_analysis,
+                "time_sensitivity_analysis": time_sensitivity_analysis,
+                "decision": decision,
+                "timestamp": datetime.now().isoformat()
+            }
+        }
+
+@app.get("/query/stream")
+async def query_stream(query: str):
+    """
+    Streaming endpoint that returns results as they become available.
+    This is useful for showing the user the reasoning process in real-time.
+    """
+    async def stream_generator():
+        async for item in rag.query_streaming(query):
+            # Convert to JSON and yield with newline for proper streaming
+            yield json.dumps(item) + "\n"
+            # Small delay to ensure proper streaming in the browser
+            await asyncio.sleep(0.1)
+    
+    return StreamingResponse(
+        stream_generator(),
+        media_type="application/x-ndjson"
+    )
+
 if __name__ == "__main__":
-    # Initialize the SmartRAG system
-    rag = SmartRAG()
-    
-    # Example queries
-    queries = [
-        # "What are the three most common fusion methods in multimodal large models?"
-        # "Give me some details about Trump's tariff policy.",
-        "Please only search for some information about Danish` culture and history through this website: https://denmark.dk/people-and-culture",
-    ]
-    
-    # Process each query
-    for query in queries:
-        print(f"\n\n=== Processing Query: {query} ===")
-        result = rag.query(query)
-        print(f"Source: {result['source']}")
-        if result['source'] == "internal":
-            print("Internal Knowledge Base Response:")
-            print(result['response'])
-            
-        else:
-            print("External Network Response:")
-            print(result['response'].content)
-            print("Citations:")
-            print(result['response'].additional_kwargs.get("citations", []))
+    uvicorn.run("onlineRagApi:app", host="0.0.0.0", port=8000, reload=True)

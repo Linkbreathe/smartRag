@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SmartRAG API Tester</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 2rem;
+        }
+
+        input {
+            padding: 0.5rem;
+            font-size: 1rem;
+        }
+
+        button {
+            margin-left: 0.5rem;
+            padding: 0.5rem 1rem;
+            font-size: 1rem;
+        }
+
+        pre {
+            background: #f4f4f4;
+            padding: 1rem;
+            border-radius: 4px;
+            max-height: 60vh;
+            overflow: auto;
+        }
+    </style>
+</head>
+
+<body>
+    <h1>SmartRAG API Tester</h1>
+    <input type="text" id="query" placeholder="Enter your query here" style="width: 300px;">
+    <button id="test-sync">Test Non-Streaming</button>
+    <button id="test-stream">Test Streaming</button>
+    <h2>Output</h2>
+    <pre id="output"></pre>
+
+    <script>
+    const output = document.getElementById('output');
+
+    document.getElementById('test-sync').addEventListener('click', async () => {
+      const query = document.getElementById('query').value;
+      output.textContent = 'Loading...';
+      try {
+        const res = await fetch('http://localhost:8000/query', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ query })
+        });
+        const data = await res.json();
+        output.textContent = JSON.stringify(data, null, 2);
+      } catch (err) {
+        output.textContent = 'Error: ' + err;
+      }
+    });
+
+    document.getElementById('test-stream').addEventListener('click', async () => {
+      const query = document.getElementById('query').value;
+      output.textContent = '';
+      try {
+        const res = await fetch('http://localhost:8000/query/stream?query=' + encodeURIComponent(query));
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          let lines = buffer.split('\n');
+          buffer = lines.pop();
+          for (const line of lines) {
+            if (line.trim()) {
+              try {
+                const obj = JSON.parse(line);
+                output.textContent += JSON.stringify(obj, null, 2) + '\n';
+              } catch {
+                output.textContent += line + '\n';
+              }
+            }
+          }
+        }
+
+        if (buffer.trim()) {
+          try {
+            const obj = JSON.parse(buffer);
+            output.textContent += JSON.stringify(obj, null, 2) + '\n';
+          } catch {
+            output.textContent += buffer;
+          }
+        }
+      } catch (err) {
+        output.textContent = 'Error: ' + err;
+      }
+    });
+    </script>
+</body>
+
+</html>
