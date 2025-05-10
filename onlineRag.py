@@ -15,7 +15,6 @@ from langchain_openai import ChatOpenAI
 # Load environment variables
 load_dotenv()
 
-
 """
     A RAG system that intelligently decides when to make external network requests
     based on query analysis, retrieval quality, and time sensitivity.
@@ -26,7 +25,7 @@ class SmartRAG:
                  llama_project_name: str = "Default",
                  gpt_model: str = "gpt-4",
                  perplexity_model: str = "sonar-pro",
-                 retriever_k: int = 7,
+                 retriever_k: int = 5,
                  min_relevance_threshold: float = 0.7,
                  time_sensitivity_threshold: float = 0.8,
                  enable_logging: bool = True):
@@ -253,6 +252,16 @@ Based on this information, decide whether to use the internal knowledge base or 
             Dict containing the response and metadata
         """
         # Step 1: Retrieve passages from internal knowledge base
+        
+        """
+        ==========================Need to be modified===============================
+        * Comment the following two lines:
+            nodes = self.retriever.retrieve(user_query)
+            passages = [node.text for node in nodes]
+            
+        * What you need to do:
+            Call your function, to return all the fragments from RAG as a LIST -> passages = [node.text for node in nodes]
+        """
         nodes = self.retriever.retrieve(user_query)
         passages = [node.text for node in nodes]
         
@@ -320,7 +329,6 @@ Based on this information, decide whether to use the internal knowledge base or 
         # In a real implementation, you might write to a file or database
         print(f"Decision Log: {json.dumps(log_entry, indent=2)}")
 
-
 # Example usage
 if __name__ == "__main__":
     # Initialize the SmartRAG system
@@ -328,7 +336,9 @@ if __name__ == "__main__":
     
     # Example queries
     queries = [
-        "Trump's 2025 tariff policy impact on Denmark"
+        # "What are the three most common fusion methods in multimodal large models?"
+        # "Give me some details about Trump's tariff policy.",
+        "Please only search for some information about Danish` culture and history through this website: https://denmark.dk/people-and-culture",
     ]
     
     # Process each query
@@ -338,8 +348,8 @@ if __name__ == "__main__":
         print(f"Source: {result['source']}")
         if result['source'] == "internal":
             print("Internal Knowledge Base Response:")
-            for node in result['response']:
-                print(node)
+            print(result['response'])
+            
         else:
             print("External Network Response:")
             print(result['response'].content)
